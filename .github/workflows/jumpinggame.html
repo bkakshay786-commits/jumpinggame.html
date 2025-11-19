@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Jumping Ball — Mini Game</title>
+<style>
+    :root {
+        --bg: #0f1724;
+        --panel: rgba(255,255,255,0.05);
+        --accent: #7dd3fc;
+        --text: #e6eef6;
+    }
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    body{
+        display:flex;align-items:center;justify-content:center;
+        background: linear-gradient(180deg,#071020 0%, #0f1724 100%);
+        color:var(--text);
+    }
+    .wrap{
+        width: min(920px, 96vw);
+        background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+        border-radius:12px; padding:16px; box-shadow: 0 6px 30px rgba(2,6,23,0.7);
+        display:grid; grid-template-columns: 1fr 260px; gap:12px;
+    }
+    @media (max-width:800px){ .wrap{grid-template-columns: 1fr; } .sidebar{order:2} }
+    canvas{background: linear-gradient(180deg,#061022,#0a1322); border-radius:8px; display:block; width:100%; height:480px;}
+    .sidebar{
+        padding:12px; background:var(--panel); border-radius:8px; display:flex;flex-direction:column; gap:12px;
+    }
+    .row{display:flex;justify-content:space-between;align-items:center}
+    button{
+        background:linear-gradient(90deg,var(--accent),#60a5fa);
+        border:0;padding:10px 12px;border-radius:8px;color:#04203a;font-weight:600;cursor:pointer;
+        box-shadow:0 6px 12px rgba(125,211,252,0.12);
+    }
+    .mutebtn{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--text);padding:8px;border-radius:8px;cursor:pointer}
+    .small{font-size:13px;color:rgba(255,255,255,0.8)}
+    .hint{font-size:12px;color:rgba(255,255,255,0.6)}
+    .score{font-size:22px;font-weight:700;color:var(--accent);text-align:center}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    footer{font-size:12px;color:rgba(255,255,255,0.6);text-align:center;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap" role="application" aria-label="Jumping ball game">
+    <div>
+        <canvas id="stage" width="800" height="480" aria-label="Game canvas"></canvas>
+        <footer>Controls: Space / Tap to jump • Press M to mute/unmute • Restart button below</footer>
+    </div>
+
+    <aside class="sidebar" aria-hidden="false">
+        <div class="row">
+            <div>
+                <div class="small">Jumping Ball</div>
+                <div class="hint">Simple HTML5 canvas game</div>
+            </div>
+            <div class="score" id="score">0</div>
+        </div>
+
+        <div>
+            <div class="small">Best</div>
+            <div id="best" style="font-size:18px;font-weight:700;color:var(--accent);">0</div>
+        </div>
+
+        <div class="row">
+            <div class="small">Sound</div>
+            <button id="mute" class="mutebtn">Mute</button>
+        </div>
+
+        <div class="row controls">
+            <button id="restart">Restart</button>
+            <div id="status" class="small" style="align-self:center;color:rgba(255,255,255,0.6)">Ready</div>
+        </div>
+
+        <div class="hint" style="margin-top:6px">Avoid obstacles by jumping. The longer you survive, the higher your score.</div>
+    </aside>
+</div>
+
+<script>
+/* Jumping Ball — Mini Game
+     Single-file HTML + JS. Drop into a new file and open in browser.
+*/
+
+(function(){
+    const canvas = document.getElementById('stage');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const bestEl = document.getElementById('best');
+    const muteBtn = document.getElementById('mute');
+    const restartBtn = document.getElementById('restart');
+    const statusEl = document.getElementById('status');
+
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // Game world
+    const groundY = H - 60;
+    const gravity = 2200; // px/s^2
+    const jumpVel = -700; // px/s
+    let lastTime = 0;
+    let running = false;
+    let muted = false;
+
+    // Player
+    const player = {
+        x: 120,
+        y: groundY - 28,
+        r: 20,
+        vy: 0,
+        onGround: true,
+        color: '#7dd3fc'
+    };
+
+    // Obstacles
+    let obstacles = [];
+    let spawnTimer = 0;
+    let spawnInterval = 1.2; // seconds
+    let speed = 320; // px/s, increases over time
+    let score = 0;
+    let best = parseInt(localStorage.getItem('jumping-ball-best') || '0', 10);
+
+    bestEl.textContent = best;
+
+    // Audio
+    const Audio = (function(){
+        let ctx = null;
+        function ensure() {
+            if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+            return ctx;
+        }
+        function beep(freq = 440, time = 0.06, type='sine', gain = 0.08) {
+            if (muted) return;
+            const c = ensure();
+            const o = c.createOscillator();
+            const g = c.createGain();
+            o.type = type;
+            o.frequency.value = freq;
+            g.gain.value = gain;
+            o.connect(g);
+            g.connect(c.destination);
+            o.start();
+            o.stop(c.currentTime + time);
+        }
+        return {beep};
+    })();
+
+    function reset() {
+        obstacles = [];
+        spawnTimer = 0;
+        spawnInterval = 1.2;
+        speed = 320;
+        player.y = groundY - player.r;
+        player.vy = 0;
+        player.onGround = true;
+        score = 0;
+        scoreEl.textContent = '0';
+        statusEl.textContent = 'Ready';
+        running = false;
+        lastTime = 0;
+    }
+
+    function start() {
+        if (!running) {
+            running = true;
+            lastTime = performance.now();
+            statusEl.textContent = 'Playing';
+            requestAnimationFrame(loop);
+        }
+    }
+
+    function gameOver() {
+        running = false;
+        statusEl.textContent = 'Game over — press Restart';
+        Audio.beep(120, 0.18, 'sawtooth', 0.12);
+        if (score > best) {
+            best = score;
+            localStorage.setItem('jumping-ball-best', best);
+            bestEl.textContent = best;
+        }
+    }
+
+    function spawnObstacle() {
+        // Ground obstacle rectangle
+        const w = randRange(28, 52);
+        const h = randRange(36, 120);
+        obstacles.push({
+            x: W + 20,
+            w,
+            h,
+            y: groundY - h,
+            color: '#e879f9'
+        });
+    }
+
+    function update(dt) {
+        if (!running) return;
+
+        // Increase difficulty slowly
+        speed += dt * 3; // px/s^2 small acceleration
+
+        // Spawn
+        spawnTimer += dt;
+        if (spawnTimer > spawnInterval) {
+            spawnTimer = 0;
+            spawnInterval = Math.max(0.7, 1.2 - score * 0.0025); // faster as score increases
+            spawnObstacle();
+        }
+
+        // Player physics
+        player.vy += gravity * dt;
+        player.y += player.vy * dt;
+
+        if (player.y >= groundY - player.r) {
+            player.y = groundY - player.r;
+            player.vy = 0;
+            player.onGround = true;
+        } else {
+            player.onGround = false;
+        }
+
+        // Move obstacles
+        for (let i = obstacles.length -1; i >= 0; i--) {
+            const ob = obstacles[i];
+            ob.x -= speed * dt;
+            // collision
+            if (circleRectCollide(player.x, player.y, player.r, ob.x, ob.y, ob.w, ob.h)) {
+                gameOver();
+            }
+            // remove offscreen
+            if (ob.x + ob.w < -40) obstacles.splice(i,1);
+        }
+
+        // Score increases over time survived
+        score += dt * 10; // score per second
+        scoreEl.textContent = Math.floor(score);
+    }
+
+    function render() {
+        // clear
+        ctx.clearRect(0,0,W,H);
+
+        // background grid / gradient handled by CSS; draw sky decorations
+        // draw ground
+        ctx.fillStyle = '#071126';
+        ctx.fillRect(0, groundY, W, H - groundY);
+
+        // draw subtle ground stripes
+        ctx.fillStyle = 'rgba(255,255,255,0.02)';
+        for (let x=0;x<W;x+=32) {
+            ctx.fillRect(x, groundY+32, 16, 2);
+        }
+
+        // draw obstacles
+        obstacles.forEach(ob => {
+            // shadow
+            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            ctx.fillRect(ob.x+4, ob.y+10, ob.w, ob.h);
+            // main
+            ctx.fillStyle = ob.color;
+            ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
+            // highlight
+            ctx.fillStyle = 'rgba(255,255,255,0.06)';
+            ctx.fillRect(ob.x+6, ob.y+6, 6, 6);
+        });
+
+        // draw player
+        // shadow
+        ctx.beginPath();
+        ctx.ellipse(player.x+6, groundY+6, player.r*0.9, 8, 0, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.fill();
+
+        // ball
+        const g = ctx.createRadialGradient(player.x-6, player.y-8, player.r*0.2, player.x+4, player.y+6, player.r*1.2);
+        g.addColorStop(0, '#ffffff');
+        g.addColorStop(0.2, player.color);
+        g.addColorStop(1, '#04536b');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, player.r, 0, Math.PI*2);
+        ctx.fill();
+
+        // face / eyes
+        ctx.fillStyle = '#04203a';
+        ctx.beginPath();
+        ctx.arc(player.x-6, player.y-2, 3, 0, Math.PI*2);
+        ctx.arc(player.x+4, player.y-2, 3, 0, Math.PI*2);
+        ctx.fill();
+
+        // optional score overlay inside canvas (large)
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        ctx.font = '700 40px Inter, system-ui, Arial';
+        ctx.textAlign = 'right';
+        ctx.fillText(Math.floor(score), W - 20, 50);
+
+        if (!running) {
+            // show big message
+            ctx.fillStyle = 'rgba(255,255,255,0.06)';
+            ctx.font = '700 24px Inter, system-ui, Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('Press Space / Tap to Start', W/2, H/2 - 30);
+            if (!player.onGround) ctx.fillText('You hit an obstacle. Restart to play again.', W/2, H/2);
+        }
+    }
+
+    function loop(ts) {
+        const dt = Math.min(0.05, (ts - lastTime) / 1000); // clamp delta
+        lastTime = ts;
+        update(dt);
+        render();
+        if (running) requestAnimationFrame(loop);
+        else render(); // final render to show messages
+    }
+
+    // Utilities
+    function randRange(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
+
+    function circleRectCollide(cx, cy, r, rx, ry, rw, rh) {
+        // find closest point to circle within rectangle
+        const closestX = clamp(cx, rx, rx + rw);
+        const closestY = clamp(cy, ry, ry + rh);
+        const dx = cx - closestX;
+        const dy = cy - closestY;
+        return (dx*dx + dy*dy) <= r*r;
+    }
+    function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+    // Input handlers
+    function jump() {
+        if (!running) start();
+        if (player.onGround) {
+            player.vy = jumpVel;
+            player.onGround = false;
+            Audio.beep(880, 0.06, 'sine', 0.08);
+        } else {
+            // small double jump allowed? For now, disallow mid-air jumps.
+        }
+    }
+
+    window.addEventListener('keydown', (e) => {
+        if (e.code === 'Space') {
+            e.preventDefault();
+            jump();
+        } else if (e.key.toLowerCase() === 'm') {
+            toggleMute();
+        } else if (e.key === 'r' || e.key === 'R') {
+            reset();
+        }
+    });
+
+    window.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        jump();
+    }, {passive:false});
+
+    canvas.addEventListener('mousedown', () => {
+        jump();
+    });
+
+    muteBtn.addEventListener('click', toggleMute);
+
+    function toggleMute() {
+        muted = !muted;
+        muteBtn.textContent = muted ? 'Unmute' : 'Mute';
+        muteBtn.classList.toggle('mutebtn', !muted);
+    }
+
+    restartBtn.addEventListener('click', () => {
+        reset();
+        start();
+        Audio.beep(440, 0.06, 'triangle', 0.08);
+    });
+
+    // initial render
+    reset();
+    render();
+
+    // Kick off a gentle animation to show canvas alive (not running)
+    setInterval(() => {
+        if (!running) {
+            // animate small idle bob for player
+            const t = performance.now() / 600;
+            player.y = (groundY - player.r) + Math.sin(t) * 2;
+            render();
+        }
+    }, 60);
+
+})();
+</script>
+</body>
+</html>
